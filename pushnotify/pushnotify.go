@@ -1,6 +1,6 @@
-// Package pushnotify 把一条短消息推送到手机或群聊：支持 Bark、Server酱和自定义群机器人 Webhook。
+// Package pushnotify 把一条短消息推送到手机或群聊：支持 Bark、Server酱、推送加和自定义群机器人 Webhook。
 //
-// 三个通道都只用标准库的 HTTP 客户端；用户填写的 Webhook 地址会被限制为公网 https，
+// 四个通道都只用标准库的 HTTP 客户端；用户填写的 Webhook 地址会被限制为公网 https，
 // 连接时还会检查解析出来的 IP，避免服务端被当成探测内网的跳板。
 //
 // 典型用法：
@@ -36,6 +36,8 @@ const (
 	Bark Channel = "bark"
 	// ServerChan 用于 Server酱（推送到微信）。
 	ServerChan Channel = "serverchan"
+	// PushPlus 用于推送加（推送到微信服务号）。
+	PushPlus Channel = "pushplus"
 	// Webhook 用于企业微信、钉钉、飞书等群机器人。
 	Webhook Channel = "webhook"
 )
@@ -52,6 +54,7 @@ type Config struct {
 	BarkKey       string
 	BarkGroup     string // 可选：Bark 通知分组名
 	ServerChanKey string
+	PushPlusToken string
 	WebhookURL    string
 }
 
@@ -62,6 +65,8 @@ func (c Config) Configured() bool {
 		return strings.TrimSpace(c.BarkKey) != ""
 	case ServerChan:
 		return strings.TrimSpace(c.ServerChanKey) != ""
+	case PushPlus:
+		return strings.TrimSpace(c.PushPlusToken) != ""
 	case Webhook:
 		return strings.TrimSpace(c.WebhookURL) != ""
 	default:
@@ -80,6 +85,8 @@ func (c Config) Validate() error {
 		return err
 	case ServerChan:
 		return ValidateServerChanKey(c.ServerChanKey)
+	case PushPlus:
+		return ValidatePushPlusToken(c.PushPlusToken)
 	case Webhook:
 		return ValidateWebhookURL(c.WebhookURL)
 	default:
@@ -114,6 +121,8 @@ func (s *Sender) Send(ctx context.Context, cfg Config, msg Message) error {
 		return s.sendBark(ctx, cfg.BarkKey, cfg.BarkGroup, msg)
 	case ServerChan:
 		return s.sendServerChan(ctx, cfg.ServerChanKey, msg)
+	case PushPlus:
+		return s.sendPushPlus(ctx, cfg.PushPlusToken, msg)
 	case Webhook:
 		return s.sendWebhook(ctx, cfg.WebhookURL, msg)
 	default:
@@ -168,6 +177,33 @@ func (s *Sender) sendServerChan(ctx context.Context, raw string, msg Message) er
 		return err
 	}
 	return responseError(out, []string{"code"}, 0)
+}
+
+func (s *Sender) sendPushPlus(ctx context.Context, raw string, msg Message) error {
+	token := strings.TrimSpace(raw)
+	if err := ValidatePushPlusToken(token); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(map[string]string{
+		"token":    token,
+		"title":    msg.Title,
+		"content":  msg.Body,
+		"template": "txt",
+	})
+	if err != nil {
+		return errors.New("消息内容整理失败")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://www.pushplus.plus/send", bytes.NewReader(payload))
+	if err != nil {
+		return errors.New("推送加地址格式不正确")
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	out, err := s.do(req)
+	if err != nil {
+		return err
+	}
+	// 推送加用 code=200 表示成功，和别的通道用 0 不一样。
+	return responseError(out, []string{"code"}, 200)
 }
 
 func (s *Sender) sendWebhook(ctx context.Context, raw string, msg Message) error {
@@ -316,6 +352,18 @@ func ValidateServerChanKey(key string) error {
 	}
 	if strings.ContainsAny(key, " /\\?#&") {
 		return errors.New("Server酱 SendKey 格式不正确")
+	}
+	return nil
+}
+
+// ValidatePushPlusToken 检查推送加 token 的基本格式。
+func ValidatePushPlusToken(token string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return errors.New("请先填写推送加 token")
+	}
+	if strings.ContainsAny(token, " /\\?#&") {
+		return errors.New("推送加 token 格式不正确")
 	}
 	return nil
 }
