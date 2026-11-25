@@ -169,4 +169,53 @@ func TestConfigConfigured(t *testing.T) {
 	if !(Config{Channel: Webhook, WebhookURL: "https://example.com"}).Configured() {
 		t.Fatal("Webhook 配置没有识别出来")
 	}
+	if !(Config{Channel: PushPlus, PushPlusToken: "abcdef0123456789"}).Configured() {
+		t.Fatal("推送加配置没有识别出来")
+	}
+}
+
+func TestSendPushPlus(t *testing.T) {
+	var got http.Request
+	client := fakeClient(200, `{"code":200,"msg":"请求成功"}`, &got)
+	err := New(client).Send(context.Background(), Config{
+		Channel:       PushPlus,
+		PushPlusToken: "abcdef0123456789abcdef0123456789",
+	}, Message{Title: "标题", Body: "正文"})
+	if err != nil {
+		t.Fatalf("发送失败：%v", err)
+	}
+	if got.URL.Host != "www.pushplus.plus" || got.URL.Path != "/send" ||
+		got.Header.Get("Content-Type") != "application/json; charset=utf-8" {
+		t.Fatalf("推送加请求不对：%s %s %s", got.URL.Host, got.URL.Path, got.Header.Get("Content-Type"))
+	}
+	var payload map[string]string
+	body, _ := io.ReadAll(got.Body)
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("请求体不是 JSON：%v", err)
+	}
+	if payload["token"] != "abcdef0123456789abcdef0123456789" || payload["title"] != "标题" ||
+		payload["content"] != "正文" || payload["template"] != "txt" {
+		t.Fatalf("推送加请求体不对：%v", payload)
+	}
+}
+
+func TestSendPushPlusRejected(t *testing.T) {
+	client := fakeClient(200, `{"code":999,"msg":"token不能为空"}`)
+	err := New(client).Send(context.Background(), Config{Channel: PushPlus, PushPlusToken: "abcdef0123456789"},
+		Message{Title: "t", Body: "b"})
+	if err == nil || !strings.Contains(err.Error(), "token不能为空") {
+		t.Fatalf("应该返回推送加的错误信息：%v", err)
+	}
+}
+
+func TestValidatePushPlusToken(t *testing.T) {
+	bad := []string{"", "   ", "带 空格", "a/b", "a?b"}
+	for _, raw := range bad {
+		if err := ValidatePushPlusToken(raw); err == nil {
+			t.Fatalf("应该拒绝 %q", raw)
+		}
+	}
+	if err := ValidatePushPlusToken(" abcdef0123456789 "); err != nil {
+		t.Fatalf("正常 token 被误拒绝：%v", err)
+	}
 }
